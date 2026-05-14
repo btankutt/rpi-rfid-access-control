@@ -14,7 +14,7 @@
 
 ## Overview
 
-A production-grade, asyncio-based RFID access control system for single-door deployments — featuring authorization with time-window restrictions, audit logging with real-time pub/sub, brute-force protection, and a FastAPI web admin UI. Designed with multi-door fleet scalability in mind (see [CLAUDE.md](CLAUDE.md) for the architectural roadmap and [docs/architecture.md](docs/architecture.md) for the component map).
+A production-grade, asyncio-based RFID access control system for single-door deployments — featuring authorization with time-window restrictions, audit logging with real-time pub/sub, brute-force protection, and a FastAPI web admin UI. Designed with multi-door fleet scalability in mind — see [docs/architecture.md](docs/architecture.md) for the component map and design rationale.
 
 This project is built by an engineer with **5+ years of experience** operating a 25-door distributed RFID access control system. The patterns and trade-offs reflected here are drawn from real-world production deployments, not tutorial code.
 

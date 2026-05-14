@@ -13,7 +13,7 @@
 
 ## Genel Bakış
 
-Tek kapılı uygulamalar için üretim sınıfı, asyncio tabanlı RFID kart geçiş sistemi — zaman penceresi kısıtları ile yetkilendirme, gerçek zamanlı pub/sub ile denetim kaydı, brute-force koruması ve FastAPI web yönetici arayüzü ile birlikte. Çoklu kapı filo ölçeklenebilirliği düşünülerek tasarlandı (mimari yol haritası için [CLAUDE.md](CLAUDE.md), bileşen haritası için [docs/architecture.md](docs/architecture.md)).
+Tek kapılı uygulamalar için üretim sınıfı, asyncio tabanlı RFID kart geçiş sistemi — zaman penceresi kısıtları ile yetkilendirme, gerçek zamanlı pub/sub ile denetim kaydı, brute-force koruması ve FastAPI web yönetici arayüzü ile birlikte. Çoklu kapı filo ölçeklenebilirliği düşünülerek tasarlandı — bileşen haritası ve tasarım gerekçeleri için [docs/architecture.md](docs/architecture.md).
 
 Bu proje, **25 kapılı dağıtık RFID kart geçiş sistemi** işleten **5+ yıllık tecrübeli** bir mühendis tarafından inşa edilmiştir. Buradaki kalıplar ve teknik tercihler eğitim örneklerinden değil, gerçek üretim ortamlarından alınmıştır.
 
