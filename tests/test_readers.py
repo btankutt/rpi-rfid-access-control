@@ -5,14 +5,11 @@ These tests use the MockRFIDReader and run without any physical hardware,
 making them suitable for CI/CD pipelines.
 """
 
-import asyncio
-
 import pytest
 
 from src.readers import (
     CardRead,
     MockRFIDReader,
-    RFIDReader,
     create_reader,
 )
 
