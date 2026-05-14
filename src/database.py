@@ -24,8 +24,11 @@ from sqlalchemy import (
     ForeignKey,
     String,
     Time,
+    desc,
     event,
+    select,
 )
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -38,6 +41,7 @@ from sqlalchemy.orm import (
     mapped_column,
     relationship,
 )
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -223,3 +227,117 @@ class Database:
         """Dispose the engine — call on shutdown."""
         await self._engine.dispose()
         logger.info("Database engine disposed")
+
+
+# =============================================================================
+# Module-level CRUD helpers
+# =============================================================================
+# These are thin async wrappers over the ORM so scripts and one-off
+# admin tasks don't need to construct sessions or write SELECTs. The
+# business-logic layer (AccessManager, AuditLogger, web routes) talks
+# to the ORM directly — use the helpers below from places where the
+# extra ceremony would be noise.
+
+
+async def add_cardholder(
+    db: Database,
+    *,
+    full_name: str,
+    role: str = "user",
+    email: Optional[str] = None,
+    active: bool = True,
+    expires_at: Optional[_dt.datetime] = None,
+    notes: Optional[str] = None,
+) -> User:
+    """Create a User row and return it with its assigned id."""
+    async with db.session() as session:
+        user = User(
+            full_name=full_name,
+            role=role,
+            email=email,
+            active=active,
+            expires_at=expires_at,
+            notes=notes,
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        return user
+
+
+async def assign_card(
+    db: Database,
+    *,
+    user_id: int,
+    uid: str,
+    label: Optional[str] = None,
+    active: bool = True,
+) -> Card:
+    """Attach an RFID card to an existing User."""
+    async with db.session() as session:
+        card = Card(user_id=user_id, uid=uid, label=label, active=active)
+        session.add(card)
+        await session.commit()
+        await session.refresh(card)
+        return card
+
+
+async def get_user_by_card_uid(db: Database, uid: str) -> Optional[User]:
+    """Look up the cardholder for an RFID UID, or None if not found.
+
+    Returns the `User` even if the card or user is deactivated — the
+    caller is responsible for policy checks. This mirrors how
+    `AccessManager` separates "lookup" from "authorize".
+    """
+    async with db.session() as session:
+        result = await session.execute(
+            select(Card)
+            .where(Card.uid == uid)
+            .options(selectinload(Card.user))
+        )
+        card = result.scalar_one_or_none()
+        return card.user if card is not None else None
+
+
+async def recent_access_logs(
+    db: Database, limit: int = 100
+) -> list[AuditLog]:
+    """Return the most recent `limit` audit-log rows, newest first."""
+    async with db.session() as session:
+        result = await session.execute(
+            select(AuditLog).order_by(desc(AuditLog.timestamp)).limit(limit)
+        )
+        return list(result.scalars().all())
+
+
+async def log_access_attempt(
+    db: Database,
+    *,
+    card_uid: str,
+    decision: Decision,
+    reason: str,
+    reader_type: str = "unknown",
+    user_id: Optional[int] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> AuditLog:
+    """Append an AuditLog row directly, without firing subscribers.
+
+    Used by maintenance scripts and recovery tooling. Production code
+    paths should write through `AuditLogger.log()` instead so live
+    dashboards see the event.
+    """
+    import json as _json
+
+    async with db.session() as session:
+        row = AuditLog(
+            card_uid=card_uid,
+            decision=decision,
+            reason=reason,
+            reader_type=reader_type,
+            user_id=user_id,
+            metadata_json=_json.dumps(metadata) if metadata else None,
+        )
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+        return row

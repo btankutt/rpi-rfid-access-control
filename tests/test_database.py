@@ -15,7 +15,12 @@ from src.database import (
     Card,
     Database,
     User,
+    add_cardholder,
+    assign_card,
     build_sqlite_url,
+    get_user_by_card_uid,
+    log_access_attempt,
+    recent_access_logs,
 )
 
 
@@ -190,3 +195,55 @@ class TestAuditLog:
             assert row.user_id is None
             # The user is gone:
             assert await session.get(User, user_id) is None
+
+
+class TestCrudHelpers:
+    @pytest.mark.asyncio
+    async def test_add_cardholder(self, db: Database):
+        user = await add_cardholder(db, full_name="Alice", role="operator")
+        assert user.id is not None
+        assert user.full_name == "Alice"
+        assert user.role == "operator"
+        assert user.active is True
+
+    @pytest.mark.asyncio
+    async def test_assign_card(self, db: Database):
+        user = await add_cardholder(db, full_name="Bob")
+        card = await assign_card(db, user_id=user.id, uid="HELP1", label="primary")
+        assert card.uid == "HELP1"
+        assert card.user_id == user.id
+
+    @pytest.mark.asyncio
+    async def test_get_user_by_card_uid_hit(self, db: Database):
+        user = await add_cardholder(db, full_name="Carol")
+        await assign_card(db, user_id=user.id, uid="CCC")
+        fetched = await get_user_by_card_uid(db, "CCC")
+        assert fetched is not None
+        assert fetched.id == user.id
+
+    @pytest.mark.asyncio
+    async def test_get_user_by_card_uid_miss(self, db: Database):
+        assert await get_user_by_card_uid(db, "NOPE") is None
+
+    @pytest.mark.asyncio
+    async def test_log_access_attempt_writes_row(self, db: Database):
+        row = await log_access_attempt(
+            db,
+            card_uid="LOG1",
+            decision="DENIED",
+            reason="UNKNOWN_CARD",
+            reader_type="mock",
+            metadata={"attempt": 3},
+        )
+        assert row.id is not None
+        assert row.metadata_json is not None
+        assert "attempt" in row.metadata_json
+
+    @pytest.mark.asyncio
+    async def test_recent_access_logs_descending(self, db: Database):
+        for i in range(5):
+            await log_access_attempt(
+                db, card_uid=f"R{i}", decision="GRANTED", reason="ok"
+            )
+        rows = await recent_access_logs(db, limit=3)
+        assert [r.card_uid for r in rows] == ["R4", "R3", "R2"]
