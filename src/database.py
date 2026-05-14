@@ -1,14 +1,13 @@
 """
 Database layer: async SQLAlchemy 2.0 + aiosqlite.
 
-Models:
-- User: a cardholder (the physical person who carries an RFID card).
-- Card: an RFID card associated with a User. A user may own multiple
-  cards (e.g., a primary plus a backup).
-- AuditLog: append-only record of every access decision.
+The MVP keeps the schema deliberately compact:
+- `User`: one row per cardholder, with `card_uid` directly on the row
+  (a user has exactly one card in this design).
+- `AccessLog`: append-only record of every access decision.
 
-The `Database` class encapsulates the engine + session factory so the
-rest of the application doesn't need to know about SQLAlchemy internals.
+Engine and sessionmaker live as module-level singletons — call
+`init_engine(path)` once at startup before issuing queries.
 """
 
 from __future__ import annotations
@@ -23,25 +22,17 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     String,
-    Time,
     desc,
     event,
     select,
 )
-from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import (
-    DeclarativeBase,
-    Mapped,
-    mapped_column,
-    relationship,
-)
-from typing import Any
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 logger = logging.getLogger(__name__)
 
@@ -54,99 +45,47 @@ class Base(DeclarativeBase):
 
 
 def _utcnow() -> _dt.datetime:
-    """Timezone-aware UTC now; used as a column default."""
     return _dt.datetime.now(_dt.timezone.utc)
 
 
 class User(Base):
-    """A cardholder.
-
-    A `User` represents the physical person whose access is being
-    controlled — separate from the web-admin login (which is configured
-    via environment variables, not stored here).
-    """
+    """A cardholder. One card per user in the MVP schema."""
 
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    full_name: Mapped[str] = mapped_column(String(120))
+    card_uid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(120))
     role: Mapped[str] = mapped_column(String(20), default="user")
-    email: Mapped[Optional[str]] = mapped_column(String(120), default=None)
-    active: Mapped[bool] = mapped_column(Boolean, default=True)
-
-    # Time-window restriction. Both NULL = no restriction.
-    allowed_hours_start: Mapped[Optional[_dt.time]] = mapped_column(
-        Time, default=None
-    )
-    allowed_hours_end: Mapped[Optional[_dt.time]] = mapped_column(
-        Time, default=None
-    )
-
-    # Optional expiry — useful for contractors, visitors, etc.
-    expires_at: Mapped[Optional[_dt.datetime]] = mapped_column(
-        DateTime, default=None
-    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[_dt.datetime] = mapped_column(DateTime, default=_utcnow)
-    notes: Mapped[Optional[str]] = mapped_column(String(500), default=None)
-
-    cards: Mapped[list["Card"]] = relationship(
-        back_populates="user",
-        cascade="all, delete-orphan",
-        lazy="selectin",
+    updated_at: Mapped[_dt.datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
     )
 
     def __repr__(self) -> str:
-        return f"User(id={self.id}, name={self.full_name!r}, role={self.role})"
+        return f"User(id={self.id}, name={self.name!r}, role={self.role})"
 
 
-class Card(Base):
-    """An RFID card belonging to a User."""
+class AccessLog(Base):
+    """Append-only record of every access decision."""
 
-    __tablename__ = "cards"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    uid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE")
-    )
-    label: Mapped[Optional[str]] = mapped_column(String(60), default=None)
-    active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[_dt.datetime] = mapped_column(DateTime, default=_utcnow)
-
-    user: Mapped["User"] = relationship(back_populates="cards", lazy="joined")
-
-    def __repr__(self) -> str:
-        return f"Card(uid={self.uid}, user_id={self.user_id}, active={self.active})"
-
-
-class AuditLog(Base):
-    """Append-only record of every access decision.
-
-    Rows in this table are never updated or deleted by the application —
-    only inserted. The web UI exposes read-only access. This guarantee
-    is essential for security audits.
-    """
-
-    __tablename__ = "audit_log"
+    __tablename__ = "access_log"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    card_uid: Mapped[str] = mapped_column(String(64), index=True)
     timestamp: Mapped[_dt.datetime] = mapped_column(
         DateTime, default=_utcnow, index=True
     )
-    card_uid: Mapped[str] = mapped_column(String(64), index=True)
-    user_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), default=None
-    )
     decision: Mapped[str] = mapped_column(String(16))
     reason: Mapped[str] = mapped_column(String(120))
-    reader_type: Mapped[str] = mapped_column(String(20))
-    metadata_json: Mapped[Optional[str]] = mapped_column(
-        String(2000), default=None
+    user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
     )
 
     def __repr__(self) -> str:
         return (
-            f"AuditLog(ts={self.timestamp.isoformat()}, "
+            f"AccessLog(ts={self.timestamp.isoformat()}, "
             f"uid={self.card_uid}, decision={self.decision})"
         )
 
@@ -155,189 +94,123 @@ class AuditLog(Base):
 # Engine / session management
 # =============================================================================
 
+_engine: Optional[AsyncEngine] = None
+_sessionmaker: Optional[async_sessionmaker[AsyncSession]] = None
 
-def build_sqlite_url(path: str) -> str:
-    """Build an aiosqlite URL from a filesystem path.
 
-    Use the literal string ``:memory:`` for an in-memory database (mainly
-    useful for tests that don't need persistence across sessions).
-    """
+def _build_url(path: str) -> str:
     if path == ":memory:":
         return "sqlite+aiosqlite:///:memory:"
     return f"sqlite+aiosqlite:///{path}"
 
 
-class Database:
-    """Owns the AsyncEngine and produces short-lived AsyncSession objects.
+def init_engine(path: str) -> None:
+    """Create the global engine and session factory.
 
-    The application creates exactly one `Database` instance at startup
-    and calls `init_schema()` once before serving traffic. Components
-    that need DB access receive the `Database` and use `session()` as
-    an async context manager.
+    Idempotent across re-calls with the same path is NOT guaranteed —
+    callers should call `close_db()` before re-initializing against a
+    different database file.
     """
+    global _engine, _sessionmaker
+    _engine = create_async_engine(_build_url(path), echo=False, future=True)
+    _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
 
-    def __init__(self, url: str) -> None:
-        self._url = url
-        self._engine: AsyncEngine = create_async_engine(
-            url, echo=False, future=True
-        )
-        self._sessionmaker = async_sessionmaker(
-            self._engine, expire_on_commit=False, class_=AsyncSession
-        )
+    # SQLite ignores foreign-key constraints unless explicitly enabled
+    # on each connection. Without this, ON DELETE SET NULL is a no-op.
+    @event.listens_for(_engine.sync_engine, "connect")
+    def _enable_sqlite_fk(dbapi_conn, _):  # noqa: ARG001
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
-        # SQLite does not enforce foreign-key constraints unless the
-        # `foreign_keys` pragma is enabled on every connection. Without
-        # this, ON DELETE CASCADE / SET NULL clauses are silently ignored.
-        if url.startswith("sqlite"):
+    logger.info("Database engine initialized for %s", path)
 
-            @event.listens_for(self._engine.sync_engine, "connect")
-            def _enable_sqlite_fk(dbapi_conn, _):  # noqa: ARG001
-                cursor = dbapi_conn.cursor()
-                cursor.execute("PRAGMA foreign_keys=ON")
-                cursor.close()
 
-        logger.info("Database engine created for %s", url)
+async def init_db() -> None:
+    """Create all tables. Safe to call on every startup."""
+    if _engine is None:
+        raise RuntimeError("init_engine() must be called before init_db()")
+    async with _engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("Database schema initialized")
 
-    @property
-    def engine(self) -> AsyncEngine:
-        return self._engine
 
-    @property
-    def url(self) -> str:
-        return self._url
+async def close_db() -> None:
+    """Dispose the engine. Idempotent — calling on a closed engine is fine."""
+    global _engine, _sessionmaker
+    if _engine is not None:
+        await _engine.dispose()
+        _engine = None
+        _sessionmaker = None
+        logger.info("Database engine closed")
 
-    async def init_schema(self) -> None:
-        """Create all tables if they don't already exist.
 
-        Idempotent — safe to call on every startup. For schema changes
-        in production deployments, use Alembic or a migration script;
-        this method only handles the initial create.
-        """
-        async with self._engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database schema initialized")
-
-    @asynccontextmanager
-    async def session(self) -> AsyncIterator[AsyncSession]:
-        """Yield a short-lived AsyncSession; commit on success."""
-        async with self._sessionmaker() as session:
-            yield session
-
-    async def close(self) -> None:
-        """Dispose the engine — call on shutdown."""
-        await self._engine.dispose()
-        logger.info("Database engine disposed")
+@asynccontextmanager
+async def get_session() -> AsyncIterator[AsyncSession]:
+    """Yield a short-lived AsyncSession."""
+    if _sessionmaker is None:
+        raise RuntimeError("init_engine() must be called before get_session()")
+    async with _sessionmaker() as session:
+        yield session
 
 
 # =============================================================================
-# Module-level CRUD helpers
+# CRUD operations
 # =============================================================================
-# These are thin async wrappers over the ORM so scripts and one-off
-# admin tasks don't need to construct sessions or write SELECTs. The
-# business-logic layer (AccessManager, AuditLogger, web routes) talks
-# to the ORM directly — use the helpers below from places where the
-# extra ceremony would be noise.
 
 
-async def add_cardholder(
-    db: Database,
-    *,
-    full_name: str,
-    role: str = "user",
-    email: Optional[str] = None,
-    active: bool = True,
-    expires_at: Optional[_dt.datetime] = None,
-    notes: Optional[str] = None,
+async def add_user(
+    card_uid: str,
+    name: str,
+    role: Role = "user",
+    is_active: bool = True,
 ) -> User:
     """Create a User row and return it with its assigned id."""
-    async with db.session() as session:
-        user = User(
-            full_name=full_name,
-            role=role,
-            email=email,
-            active=active,
-            expires_at=expires_at,
-            notes=notes,
-        )
+    async with get_session() as session:
+        user = User(card_uid=card_uid, name=name, role=role, is_active=is_active)
         session.add(user)
         await session.commit()
         await session.refresh(user)
         return user
 
 
-async def assign_card(
-    db: Database,
-    *,
-    user_id: int,
-    uid: str,
-    label: Optional[str] = None,
-    active: bool = True,
-) -> Card:
-    """Attach an RFID card to an existing User."""
-    async with db.session() as session:
-        card = Card(user_id=user_id, uid=uid, label=label, active=active)
-        session.add(card)
-        await session.commit()
-        await session.refresh(card)
-        return card
+async def get_user_by_uid(card_uid: str) -> Optional[User]:
+    """Look up a user by RFID UID, or None if not found.
 
-
-async def get_user_by_card_uid(db: Database, uid: str) -> Optional[User]:
-    """Look up the cardholder for an RFID UID, or None if not found.
-
-    Returns the `User` even if the card or user is deactivated — the
-    caller is responsible for policy checks. This mirrors how
-    `AccessManager` separates "lookup" from "authorize".
+    Returns the row regardless of `is_active` — the caller is responsible
+    for the policy check.
     """
-    async with db.session() as session:
+    async with get_session() as session:
         result = await session.execute(
-            select(Card)
-            .where(Card.uid == uid)
-            .options(selectinload(Card.user))
+            select(User).where(User.card_uid == card_uid)
         )
-        card = result.scalar_one_or_none()
-        return card.user if card is not None else None
-
-
-async def recent_access_logs(
-    db: Database, limit: int = 100
-) -> list[AuditLog]:
-    """Return the most recent `limit` audit-log rows, newest first."""
-    async with db.session() as session:
-        result = await session.execute(
-            select(AuditLog).order_by(desc(AuditLog.timestamp)).limit(limit)
-        )
-        return list(result.scalars().all())
+        return result.scalar_one_or_none()
 
 
 async def log_access_attempt(
-    db: Database,
-    *,
     card_uid: str,
     decision: Decision,
     reason: str,
-    reader_type: str = "unknown",
     user_id: Optional[int] = None,
-    metadata: Optional[dict[str, Any]] = None,
-) -> AuditLog:
-    """Append an AuditLog row directly, without firing subscribers.
-
-    Used by maintenance scripts and recovery tooling. Production code
-    paths should write through `AuditLogger.log()` instead so live
-    dashboards see the event.
-    """
-    import json as _json
-
-    async with db.session() as session:
-        row = AuditLog(
+) -> AccessLog:
+    """Append a row to the access log."""
+    async with get_session() as session:
+        row = AccessLog(
             card_uid=card_uid,
             decision=decision,
             reason=reason,
-            reader_type=reader_type,
             user_id=user_id,
-            metadata_json=_json.dumps(metadata) if metadata else None,
         )
         session.add(row)
         await session.commit()
         await session.refresh(row)
         return row
+
+
+async def get_recent_logs(limit: int = 100) -> list[AccessLog]:
+    """Return the most recent N log rows, newest first."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(AccessLog).order_by(desc(AccessLog.timestamp)).limit(limit)
+        )
+        return list(result.scalars().all())
