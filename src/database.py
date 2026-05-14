@@ -84,9 +84,9 @@ class User(Base):
 
     # Optional expiry — useful for contractors, visitors, etc.
     expires_at: Mapped[Optional[_dt.datetime]] = mapped_column(
-        DateTime, default=None
+        DateTime(timezone=True), default=None
     )
-    created_at: Mapped[_dt.datetime] = mapped_column(DateTime, default=_utcnow)
+    created_at: Mapped[_dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     notes: Mapped[Optional[str]] = mapped_column(String(500), default=None)
 
     cards: Mapped[list["Card"]] = relationship(
@@ -111,7 +111,7 @@ class Card(Base):
     )
     label: Mapped[Optional[str]] = mapped_column(String(60), default=None)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[_dt.datetime] = mapped_column(DateTime, default=_utcnow)
+    created_at: Mapped[_dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     user: Mapped["User"] = relationship(back_populates="cards", lazy="joined")
 
@@ -131,7 +131,7 @@ class AuditLog(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     timestamp: Mapped[_dt.datetime] = mapped_column(
-        DateTime, default=_utcnow, index=True
+        DateTime(timezone=True), default=_utcnow, index=True
     )
     card_uid: Mapped[str] = mapped_column(String(64), index=True)
     user_id: Mapped[Optional[int]] = mapped_column(
