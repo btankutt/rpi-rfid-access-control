@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from src.audit_logger import AuditLogger
-from src.database import Card, Database, User
+from src.database import Card, Database, Decision, User
 from src.door_controller import DoorController
 from src.rate_limiter import RateLimiter
 from src.readers import CardRead
@@ -243,7 +243,7 @@ class AccessManager:
         return now_t >= start or now_t < end
 
     async def _record(self, card_read: CardRead, decision: AccessDecision) -> None:
-        decision_code = "GRANTED" if decision.granted else "DENIED"
+        decision_code: Decision = "GRANTED" if decision.granted else "DENIED"
         await self._audit.log(
             card_uid=card_read.uid,
             decision=decision_code,
