@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — RPi RFID{% endblock %}
+{% block nav %}
+<nav>
+  <a href="/dashboard">Dashboard</a>
+  <a href="/users">Users</a>
+  <a href="/logs">Logs</a>
+  <form method="post" action="/logout" class="inline">
+    <button type="submit">Log out ({{ admin }})</button>
+  </form>
+</nav>
+{% endblock %}
+{% block content %}
+<section>
+  <h2>Live Events</h2>
+  <ul id="events" data-csrf="{{ csrf_token }}"></ul>
+  {% if is_mock_mode %}
+  <div class="simulator">
+    <h3>Simulate Card Read</h3>
+    <form id="simulate-form">
+      <label>UID <input type="text" name="uid" value="A1B2C3D4" required></label>
+      <button type="submit">Simulate</button>
+    </form>
+    <pre id="simulate-result"></pre>
+  </div>
+  {% endif %}
+</section>
+<script>
+const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/events");
+ws.onmessage = (e) => {
+  const ev = JSON.parse(e.data);
+  const li = document.createElement("li");
+  li.textContent = `${ev.timestamp} ${ev.decision} ${ev.card_uid} — ${ev.reason}`;
+  li.className = ev.decision === "GRANTED" ? "granted" : "denied";
+  document.getElementById("events").prepend(li);
+};
+const sim = document.getElementById("simulate-form");
+if (sim) {
+  sim.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const uid = sim.querySelector("input[name=uid]").value;
+    const res = await fetch("/api/simulate", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({uid})
+    });
+    document.getElementById("simulate-result").textContent = await res.text();
+  });
+}
+</script>
+{% endblock %}

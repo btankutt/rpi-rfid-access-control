@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Users — RPi RFID{% endblock %}
+{% block nav %}
+<nav>
+  <a href="/dashboard">Dashboard</a>
+  <a href="/users">Users</a>
+  <a href="/logs">Logs</a>
+</nav>
+{% endblock %}
+{% block content %}
+<section>
+  <h2>Users ({{ users|length }})</h2>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Name</th><th>Role</th><th>Active</th><th>Expires</th></tr>
+    </thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <td>{{ u.id }}</td>
+        <td>{{ u.full_name }}</td>
+        <td>{{ u.role }}</td>
+        <td>{{ "yes" if u.active else "no" }}</td>
+        <td>{{ u.expires_at.isoformat() if u.expires_at else "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
