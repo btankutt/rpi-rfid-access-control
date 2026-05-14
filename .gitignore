@@ -75,3 +75,6 @@ local_config.py
 .coverage
 .coverage.*
 htmlcov/
+
+# Local development notes — not for public showcase
+CLAUDE.md
