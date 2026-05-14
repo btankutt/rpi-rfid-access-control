@@ -87,6 +87,28 @@ python -m src.main --simulate-card A1B2C3D4
 # Çıkış kodu: 1 (DENIED). 0 ise GRANTED.
 ```
 
+### Web yönetici arayüzü ile çalıştırma
+
+Reader loop çalışırken, yönetici arayüzüne şu adresten erişilebilir:
+
+---
+
+## Modüller
+
+| Modül | Amaç |
+|-------|------|
+| `src/config.py` | pydantic-settings ile env'den ayar yükleme |
+| `src/database.py` | SQLAlchemy 2.0 async modelleri (`User`, `Card`, `AuditLog`) + `Database` sınıfı |
+| `src/readers/` | RFID okuyucu soyutlaması (Mock, MFRC522, PN532, RS-232) |
+| `src/door_controller.py` | Röle soyutlaması: `MockDoorController` + `GPIODoorController` |
+| `src/access_manager.py` | Zaman penceresi kısıtları, rol bazlı erişim ve süresi dolan kartlar ile yetkilendirme |
+| `src/audit_logger.py` | Gerçek zamanlı yönetici paneline canlı yayın için pub/sub destekli olay kaydı |
+| `src/rate_limiter.py` | Kart UID başına yapılandırılabilir eşikle kayan-pencere brute-force koruması |
+| `src/web/` | FastAPI yönetici arayüzü: bcrypt auth, CSRF token, Starlette session, REST API, WebSocket olay akışı |
+| `src/main.py` | Giriş noktası: reader loop, sinyal yönetimi, `--simulate-card` |
+| `scripts/hash_password.py` | Yönetici kimlik bilgileri için bcrypt parola hash üretici |
+| `scripts/install.sh` | Üretim ortamı dağıtım yardımcısı |
+
 ---
 
 ## Donanım Kurulum Listesi

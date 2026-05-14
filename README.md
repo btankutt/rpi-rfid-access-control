@@ -88,6 +88,28 @@ python -m src.main --simulate-card A1B2C3D4
 # Exit code: 1 (DENIED). Exit 0 means GRANTED.
 ```
 
+### Run with web admin UI
+
+Once the reader loop is running, the admin UI is available at:
+
+---
+
+## Modules
+
+| Module | Purpose |
+|--------|---------|
+| `src/config.py` | Environment-driven settings via pydantic-settings |
+| `src/database.py` | SQLAlchemy 2.0 async models (`User`, `Card`, `AuditLog`) + `Database` class |
+| `src/readers/` | RFID reader abstraction (Mock, MFRC522, PN532, RS-232) |
+| `src/door_controller.py` | Relay abstraction with `MockDoorController` and `GPIODoorController` |
+| `src/access_manager.py` | Authorization with time-window restrictions, role-based access, expirable cards |
+| `src/audit_logger.py` | Append-only event log with pub/sub for real-time admin dashboard broadcast |
+| `src/rate_limiter.py` | Sliding-window brute-force protection (configurable threshold per card UID) |
+| `src/web/` | FastAPI admin UI: bcrypt auth, CSRF tokens, Starlette sessions, REST API, WebSocket event stream |
+| `src/main.py` | Entry point: reader loop, signal handling, `--simulate-card` flag |
+| `scripts/hash_password.py` | Bcrypt password hash generator for admin credentials |
+| `scripts/install.sh` | Production deployment helper |
+
 ---
 
 ## Architecture
