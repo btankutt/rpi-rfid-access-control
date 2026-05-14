@@ -21,6 +21,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     String,
     desc,
     event,
@@ -71,6 +72,10 @@ class AccessLog(Base):
     """Append-only record of every access decision."""
 
     __tablename__ = "access_log"
+    __table_args__ = (
+        Index("idx_log_user_time", "user_id", "timestamp"),
+        Index("idx_log_decision_time", "decision", "timestamp"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     card_uid: Mapped[str] = mapped_column(String(64), index=True)
