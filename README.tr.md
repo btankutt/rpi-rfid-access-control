@@ -76,6 +76,17 @@ python -m src.main
 
 Sistem **mock modda** başlar — Raspberry Pi veya RFID donanımı gerekmez. Web arayüzündeki "Simulate Card Read" butonu ile tüm akışı uçtan uca test edebilirsiniz.
 
+### Tek-atımlık duman testi (sunucu açmadan)
+
+CI hatları veya hızlı bir doğrulama için, HTTP sunucusunu başlatmadan
+tek bir yetkilendirme kararı çalıştırabilirsiniz:
+
+```bash
+python -m src.main --simulate-card A1B2C3D4
+# {"granted": false, "reason": "UNKNOWN_CARD", "user_id": null}
+# Çıkış kodu: 1 (DENIED). 0 ise GRANTED.
+```
+
 ---
 
 ## Donanım Kurulum Listesi

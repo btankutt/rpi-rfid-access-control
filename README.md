@@ -77,6 +77,17 @@ python -m src.main
 
 The system will start in **mock mode** — no Raspberry Pi or RFID hardware needed. Use the web UI's "Simulate Card Read" button to test the flow end-to-end.
 
+### One-shot smoke test (no server)
+
+For CI pipelines or quick sanity checks you can run a single authorization
+decision without spinning up the HTTP server:
+
+```bash
+python -m src.main --simulate-card A1B2C3D4
+# {"granted": false, "reason": "UNKNOWN_CARD", "user_id": null}
+# Exit code: 1 (DENIED). Exit 0 means GRANTED.
+```
+
 ---
 
 ## Architecture
