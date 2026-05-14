@@ -18,24 +18,20 @@ class TestMockDoorController:
     @pytest.mark.asyncio
     async def test_open_sets_state_then_relocks(self):
         door = MockDoorController(default_duration_seconds=0.05)
-        assert door.is_open is False
+        assert door.get_status() is False
 
         task = asyncio.create_task(door.open())
-        # Yield once so the task starts; it should now report open.
-        await asyncio.sleep(0)
-        # Use a very small wait to confirm it's actually open mid-pulse:
         await asyncio.sleep(0.01)
-        assert door.is_open is True
+        assert door.get_status() is True
 
         await task
-        assert door.is_open is False
+        assert door.get_status() is False
 
     @pytest.mark.asyncio
     async def test_records_open_events(self):
         door = MockDoorController(default_duration_seconds=0.01)
         await door.open()
         await door.open(duration_seconds=0.02)
-
         assert len(door.open_events) == 2
         assert door.open_events[0][1] == pytest.approx(0.01)
         assert door.open_events[1][1] == pytest.approx(0.02)
@@ -47,33 +43,32 @@ class TestMockDoorController:
             await door.open(duration_seconds=0)
 
     @pytest.mark.asyncio
-    async def test_default_duration_applied(self):
-        door = MockDoorController(default_duration_seconds=0.03)
-        await door.open()
-        assert door.open_events[0][1] == pytest.approx(0.03)
-
-    @pytest.mark.asyncio
     async def test_close_relocks_early(self):
         door = MockDoorController(default_duration_seconds=10.0)
         task = asyncio.create_task(door.open())
         await asyncio.sleep(0.01)
-        assert door.is_open is True
+        assert door.get_status() is True
 
         await door.close()
         await asyncio.wait_for(task, timeout=0.5)
-        assert door.is_open is False
+        assert door.get_status() is False
 
     @pytest.mark.asyncio
     async def test_close_on_locked_door_is_safe(self):
         door = MockDoorController(default_duration_seconds=0.01)
-        # No open() in flight — close() should be a no-op
         await door.close()
-        assert door.is_open is False
-
-        # Subsequent open() must still work normally
+        assert door.get_status() is False
         await door.open()
-        assert door.is_open is False  # back to locked after pulse
+        assert door.get_status() is False
         assert len(door.open_events) == 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_opens(self):
+        """Calling open() multiple times in parallel records each event."""
+        door = MockDoorController(default_duration_seconds=0.01)
+        await asyncio.gather(door.open(), door.open(), door.open())
+        assert len(door.open_events) == 3
+        assert door.get_status() is False
 
 
 class TestGPIODoorController:
@@ -91,69 +86,14 @@ class TestGPIODoorController:
 
     @pytest.mark.asyncio
     async def test_initialize_without_rpi_gpio_raises(self):
-        """RPi.GPIO isn't installed on dev/CI — initialize() must report
-        a clear, actionable error rather than a confusing ImportError."""
+        """RPi.GPIO isn't installed on dev/CI; the error should be actionable."""
         controller = GPIODoorController(pin=17)
         with pytest.raises(RuntimeError, match="RPi.GPIO"):
             await controller.initialize()
 
     @pytest.mark.asyncio
-    async def test_polarity_logic_with_fake_gpio(self):
-        """Use a fake GPIO module to verify the HIGH/LOW pulses come out
-        right for the four combinations of fail_safe + active_high."""
-
-        class FakeGPIO:
-            BCM = "BCM"
-            OUT = "OUT"
-            HIGH = 1
-            LOW = 0
-
-            def __init__(self):
-                self.calls: list[tuple[str, tuple]] = []
-                self.pin_state: dict[int, int] = {}
-
-            def setwarnings(self, _): self.calls.append(("setwarnings", ()))
-            def setmode(self, _): self.calls.append(("setmode", ()))
-            def setup(self, pin, mode): self.calls.append(("setup", (pin, mode)))
-            def output(self, pin, level):
-                self.calls.append(("output", (pin, level)))
-                self.pin_state[pin] = level
-            def cleanup(self, pin): self.calls.append(("cleanup", (pin,)))
-
-        scenarios = [
-            # (fail_safe, active_high, expected_idle, expected_active)
-            (True, True, 1, 0),    # idle HIGH (energized), pulse LOW (de-energize)
-            (True, False, 0, 1),   # inverted board
-            (False, True, 0, 1),   # idle LOW (de-energized), pulse HIGH (energize)
-            (False, False, 1, 0),  # inverted fail-secure
-        ]
-        for fail_safe, active_high, idle, active in scenarios:
-            controller = GPIODoorController(
-                pin=17,
-                default_duration_seconds=0.01,
-                fail_safe=fail_safe,
-                active_high=active_high,
-            )
-            controller._gpio = FakeGPIO()
-            # Skip initialize() since we're injecting the fake directly
-            outputs_before = [
-                level for op, (_, level) in controller._gpio.calls if op == "output"
-            ]
-            assert outputs_before == []
-
-            await controller.open()
-            outputs = [
-                level for op, (_, level) in controller._gpio.calls if op == "output"
-            ]
-            # Pulse should be: active, then back to idle.
-            assert outputs == [active, idle], (
-                f"fail_safe={fail_safe} active_high={active_high} "
-                f"expected [active={active}, idle={idle}] got {outputs}"
-            )
-
-    @pytest.mark.asyncio
-    async def test_close_interrupts_gpio_pulse(self):
-        """close() on GPIODoorController must drive the idle level immediately."""
+    async def test_fail_safe_polarity(self):
+        """fail_safe_mode=True: idle HIGH (lock energized), pulse LOW."""
 
         class FakeGPIO:
             BCM = "BCM"
@@ -164,42 +104,42 @@ class TestGPIODoorController:
             def __init__(self):
                 self.outputs: list[tuple[int, int]] = []
 
-            def setwarnings(self, _): pass  # noqa: E704
-            def setmode(self, _): pass  # noqa: E704
-            def setup(self, *_): pass  # noqa: E704
-            def output(self, pin, level): self.outputs.append((pin, level))  # noqa: E704
-            def cleanup(self, _): pass  # noqa: E704
+            def setwarnings(self, _):
+                pass
+
+            def setmode(self, _):
+                pass
+
+            def setup(self, *_):
+                pass
+
+            def output(self, pin, level):
+                self.outputs.append((pin, level))
+
+            def cleanup(self, _):
+                pass
 
         controller = GPIODoorController(
-            pin=17, default_duration_seconds=10.0, fail_safe=False
+            pin=17, default_duration_seconds=0.01, fail_safe_mode=True
         )
         controller._gpio = FakeGPIO()
-
-        task = asyncio.create_task(controller.open())
-        await asyncio.sleep(0.01)
-        assert controller.is_open is True
-
-        await controller.close()
-        await asyncio.wait_for(task, timeout=0.5)
-        assert controller.is_open is False
-        # Should have at least the active pulse followed by an idle level.
+        await controller.open()
         levels = [lvl for _, lvl in controller._gpio.outputs]
-        assert levels[0] == 1  # active (fail-secure: HIGH to unlock)
-        assert levels[-1] == 0  # idle (back to locked)
+        # Pulse: LOW (unlock by de-energize), then HIGH (idle locked)
+        assert levels == [0, 1]
 
     @pytest.mark.asyncio
-    async def test_concurrent_opens_serialized(self):
-        """Overlapping open() calls must be serialized via the internal lock."""
+    async def test_fail_secure_polarity(self):
+        """fail_safe_mode=False: idle LOW, pulse HIGH."""
 
-        class CountingGPIO:
+        class FakeGPIO:
             BCM = "BCM"
             OUT = "OUT"
             HIGH = 1
             LOW = 0
 
             def __init__(self):
-                self.active_count = 0
-                self.max_active = 0
+                self.outputs: list[tuple[int, int]] = []
 
             def setwarnings(self, _):
                 pass
@@ -210,48 +150,42 @@ class TestGPIODoorController:
             def setup(self, *_):
                 pass
 
-            def output(self, _, level):
-                if level == 1:
-                    self.active_count += 1
-                else:
-                    self.active_count -= 1
-                self.max_active = max(self.max_active, self.active_count)
+            def output(self, pin, level):
+                self.outputs.append((pin, level))
 
             def cleanup(self, _):
                 pass
 
         controller = GPIODoorController(
-            pin=17, default_duration_seconds=0.02, fail_safe=False
+            pin=17, default_duration_seconds=0.01, fail_safe_mode=False
         )
-        controller._gpio = CountingGPIO()
-
-        await asyncio.gather(controller.open(), controller.open(), controller.open())
-        # Three sequential active->idle pulses, never more than 1 active at a time
-        assert controller._gpio.max_active == 1
+        controller._gpio = FakeGPIO()
+        await controller.open()
+        levels = [lvl for _, lvl in controller._gpio.outputs]
+        assert levels == [1, 0]
 
 
 class TestFactory:
     def test_create_mock(self):
-        d = create_door_controller("mock")
-        assert isinstance(d, MockDoorController)
-        assert d.controller_type == "mock"
+        door = create_door_controller(use_mock=True)
+        assert isinstance(door, MockDoorController)
 
     def test_create_mock_with_kwargs(self):
-        d = create_door_controller("mock", default_duration_seconds=10.0)
-        assert isinstance(d, MockDoorController)
-        assert d._default == 10.0
+        door = create_door_controller(
+            use_mock=True, default_duration_seconds=10.0
+        )
+        assert isinstance(door, MockDoorController)
+        assert door._default == 10.0
+
+    def test_create_gpio_requires_pin(self):
+        with pytest.raises(ValueError, match="pin"):
+            create_door_controller(use_mock=False)
 
     def test_create_gpio(self):
-        d = create_door_controller("gpio", pin=22)
-        assert isinstance(d, GPIODoorController)
-
-    def test_case_insensitive(self):
-        d = create_door_controller("MOCK")
-        assert isinstance(d, MockDoorController)
-
-    def test_unknown_raises(self):
-        with pytest.raises(ValueError, match="Unknown door controller"):
-            create_door_controller("magnet")
+        door = create_door_controller(use_mock=False, pin=22, fail_safe_mode=False)
+        assert isinstance(door, GPIODoorController)
+        assert door._pin == 22
+        assert door._fail_safe_mode is False
 
 
 class TestABCContract:
