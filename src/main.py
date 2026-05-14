@@ -169,6 +169,10 @@ async def main_async(simulate_card: Optional[str] = None) -> int:
         settings.reader_type,
     )
 
+    # Ensure the directory for the SQLite file exists; aiosqlite won't
+    # create it on its own and will fail with "unable to open database file"
+    # on a fresh install.
+    Path(settings.database_path).parent.mkdir(parents=True, exist_ok=True)
     init_engine(settings.database_path)
     await init_db()
 
