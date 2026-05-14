@@ -52,6 +52,29 @@ class TestMockDoorController:
         await door.open()
         assert door.open_events[0][1] == pytest.approx(0.03)
 
+    @pytest.mark.asyncio
+    async def test_close_relocks_early(self):
+        door = MockDoorController(default_duration_seconds=10.0)
+        task = asyncio.create_task(door.open())
+        await asyncio.sleep(0.01)
+        assert door.is_open is True
+
+        await door.close()
+        await asyncio.wait_for(task, timeout=0.5)
+        assert door.is_open is False
+
+    @pytest.mark.asyncio
+    async def test_close_on_locked_door_is_safe(self):
+        door = MockDoorController(default_duration_seconds=0.01)
+        # No open() in flight — close() should be a no-op
+        await door.close()
+        assert door.is_open is False
+
+        # Subsequent open() must still work normally
+        await door.open()
+        assert door.is_open is False  # back to locked after pulse
+        assert len(door.open_events) == 1
+
 
 class TestGPIODoorController:
     def test_pin_range_validation(self):
@@ -127,6 +150,42 @@ class TestGPIODoorController:
                 f"fail_safe={fail_safe} active_high={active_high} "
                 f"expected [active={active}, idle={idle}] got {outputs}"
             )
+
+    @pytest.mark.asyncio
+    async def test_close_interrupts_gpio_pulse(self):
+        """close() on GPIODoorController must drive the idle level immediately."""
+
+        class FakeGPIO:
+            BCM = "BCM"
+            OUT = "OUT"
+            HIGH = 1
+            LOW = 0
+
+            def __init__(self):
+                self.outputs: list[tuple[int, int]] = []
+
+            def setwarnings(self, _): pass  # noqa: E704
+            def setmode(self, _): pass  # noqa: E704
+            def setup(self, *_): pass  # noqa: E704
+            def output(self, pin, level): self.outputs.append((pin, level))  # noqa: E704
+            def cleanup(self, _): pass  # noqa: E704
+
+        controller = GPIODoorController(
+            pin=17, default_duration_seconds=10.0, fail_safe=False
+        )
+        controller._gpio = FakeGPIO()
+
+        task = asyncio.create_task(controller.open())
+        await asyncio.sleep(0.01)
+        assert controller.is_open is True
+
+        await controller.close()
+        await asyncio.wait_for(task, timeout=0.5)
+        assert controller.is_open is False
+        # Should have at least the active pulse followed by an idle level.
+        levels = [lvl for _, lvl in controller._gpio.outputs]
+        assert levels[0] == 1  # active (fail-secure: HIGH to unlock)
+        assert levels[-1] == 0  # idle (back to locked)
 
     @pytest.mark.asyncio
     async def test_concurrent_opens_serialized(self):

@@ -50,6 +50,16 @@ class DoorController(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    async def close(self) -> None:
+        """Force the door back to the locked state immediately.
+
+        If an `open()` pulse is currently in flight, this cancels the
+        remaining hold time and re-locks now. Calling `close()` while
+        the door is already locked is a safe no-op.
+        """
+        raise NotImplementedError
+
     @property
     @abstractmethod
     def is_open(self) -> bool:
@@ -80,6 +90,7 @@ class MockDoorController(DoorController):
     def __init__(self, default_duration_seconds: float = 5.0) -> None:
         self._default = default_duration_seconds
         self._is_open = False
+        self._close_event = asyncio.Event()
         self.open_events: list[tuple[datetime, float]] = []
 
     @property
@@ -93,14 +104,27 @@ class MockDoorController(DoorController):
 
         timestamp = datetime.now(timezone.utc)
         self.open_events.append((timestamp, duration))
+        self._close_event.clear()
         self._is_open = True
         logger.info("MockDoor opened for %.2fs", duration)
 
         try:
-            await asyncio.sleep(duration)
+            # Sleep up to `duration`, but wake immediately if close()
+            # was called externally.
+            await asyncio.wait_for(self._close_event.wait(), timeout=duration)
+            logger.info("MockDoor re-locked early via close()")
+        except asyncio.TimeoutError:
+            logger.info("MockDoor re-locked after full duration")
         finally:
             self._is_open = False
-            logger.info("MockDoor re-locked")
+
+    async def close(self) -> None:
+        """Re-lock the door immediately.
+
+        Safe to call when the door is already locked — the close event
+        will fire, but the next `open()` clears it before sleeping.
+        """
+        self._close_event.set()
 
 
 # =============================================================================
@@ -140,6 +164,7 @@ class GPIODoorController(DoorController):
         self._is_open = False
         self._gpio = None  # populated in initialize()
         self._lock = asyncio.Lock()
+        self._close_event = asyncio.Event()
 
     @property
     def is_open(self) -> bool:
@@ -195,15 +220,24 @@ class GPIODoorController(DoorController):
         # Serialize concurrent open() calls — overlapping pulses would
         # leave the relay in an indeterminate state.
         async with self._lock:
+            self._close_event.clear()
             self._gpio.output(self._pin, self._active_level(self._gpio))
             self._is_open = True
             logger.info("Door opened for %.2fs", duration)
             try:
-                await asyncio.sleep(duration)
+                await asyncio.wait_for(
+                    self._close_event.wait(), timeout=duration
+                )
+                logger.info("Door re-locked early via close()")
+            except asyncio.TimeoutError:
+                logger.info("Door re-locked after full duration")
             finally:
                 self._gpio.output(self._pin, self._idle_level(self._gpio))
                 self._is_open = False
-                logger.info("Door re-locked")
+
+    async def close(self) -> None:
+        """Re-lock immediately, interrupting any in-flight `open()` pulse."""
+        self._close_event.set()
 
     async def shutdown(self) -> None:
         if self._gpio is not None:
