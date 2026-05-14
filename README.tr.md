@@ -13,7 +13,7 @@
 
 ## Genel Bakış
 
-Tek kapılı uygulamalar için tasarlanmış, hazır-üretim kalitesinde tam kapsamlı bir RFID kart geçiş çözümü. Kurulum sonrası doğrudan kullanılabilir: kurcalamaya dayanıklı, ağ kesintilerine karşı dayanıklı, sürekli internet bağlantısı gerektirmez.
+Tek kapılı uygulamalar için üretim sınıfı, asyncio tabanlı RFID kart geçiş sistemi — zaman penceresi kısıtları ile yetkilendirme, gerçek zamanlı pub/sub ile denetim kaydı, brute-force koruması ve FastAPI web yönetici arayüzü ile birlikte. Çoklu kapı filo ölçeklenebilirliği düşünülerek tasarlandı (mimari yol haritası için [CLAUDE.md](CLAUDE.md), bileşen haritası için [docs/architecture.md](docs/architecture.md)).
 
 Bu proje, **25 kapılı dağıtık RFID kart geçiş sistemi** işleten **5+ yıllık tecrübeli** bir mühendis tarafından inşa edilmiştir. Buradaki kalıplar ve teknik tercihler eğitim örneklerinden değil, gerçek üretim ortamlarından alınmıştır.
 
@@ -91,6 +91,16 @@ python -m src.main --simulate-card A1B2C3D4
 
 Reader loop çalışırken, yönetici arayüzüne şu adresten erişilebilir:
 
+- **Yönetici arayüzü:** http://localhost:8000
+- **OpenAPI dokümantasyonu:** http://localhost:8000/docs
+- **Gerçek zamanlı olay akışı:** `ws://localhost:8000/ws/events`
+
+`.env`'de `ADMIN_USERNAME` ve `ADMIN_PASSWORD_HASH` ile yapılandırdığınız kullanıcı adı ve parola ile giriş yapın. bcrypt hash'i şununla üretin:
+
+```bash
+python scripts/hash_password.py
+```
+
 ---
 
 ## Modüller
@@ -148,11 +158,22 @@ Gerçek dağıtımlarda öğrenilmiş, dokümandan görülemeyen detaylar:
 
 ## Yol Haritası
 
+Bu repoda zaten implement edilmiş ve gönderilmiş:
+
+- [x] Zaman penceresi kısıtları, son kullanım tarihli kartlar, rol kontrolleri ile AccessManager
+- [x] Gerçek zamanlı yönetici panelleri için WebSocket pub/sub ile AuditLogger
+- [x] Brute-force koruması için kayan-pencere rate limiter
+- [x] bcrypt kimlik doğrulama, CSRF token, REST API ile FastAPI web yönetici arayüzü
+- [x] Çift dilli dokümantasyon (İngilizce + Türkçe)
+- [x] Üretim sınıfı sertleştirme (timezone-aware datetime'lar, composite DB indexleri, exponential backoff)
+
+Planlanmış gelecek genişletmeler:
+
+- [ ] İsteğe bağlı kapı sensörü ile kurcalama tespiti
 - [ ] LDAP / Active Directory entegrasyonu
-- [ ] Çok-kapılı koordinasyon protokolü (kardeş proje: `multi-pi-fleet-manager`)
-- [ ] Mobil uygulama (React Native) — yönetici işlemleri için
 - [ ] OSDP protokol desteği (endüstri standardı)
-- [ ] Personel devam takibi raporlama modülü
+- [ ] Personel devam takip raporlama modülü
+- [ ] Mobil uygulama (React Native) — yönetici işlemleri için
 
 ---
 

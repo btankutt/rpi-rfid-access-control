@@ -14,7 +14,7 @@
 
 ## Overview
 
-A complete, self-contained RFID-based access control solution for single-door deployments. Designed to be production-ready out of the box: tamper-resistant, network-resilient, and operable without continuous internet connectivity.
+A production-grade, asyncio-based RFID access control system for single-door deployments — featuring authorization with time-window restrictions, audit logging with real-time pub/sub, brute-force protection, and a FastAPI web admin UI. Designed with multi-door fleet scalability in mind (see [CLAUDE.md](CLAUDE.md) for the architectural roadmap and [docs/architecture.md](docs/architecture.md) for the component map).
 
 This project is built by an engineer with **5+ years of experience** operating a 25-door distributed RFID access control system. The patterns and trade-offs reflected here are drawn from real-world production deployments, not tutorial code.
 
@@ -91,6 +91,16 @@ python -m src.main --simulate-card A1B2C3D4
 ### Run with web admin UI
 
 Once the reader loop is running, the admin UI is available at:
+
+- **Admin UI:** http://localhost:8000
+- **OpenAPI docs:** http://localhost:8000/docs
+- **Real-time event stream:** `ws://localhost:8000/ws/events`
+
+Log in with the username and password configured via `ADMIN_USERNAME` and `ADMIN_PASSWORD_HASH` in `.env`. Generate the bcrypt hash with:
+
+```bash
+python scripts/hash_password.py
+```
 
 ---
 
@@ -212,11 +222,22 @@ Based on real-world deployments, here are non-obvious gotchas:
 
 ## Roadmap
 
+Already implemented and shipped in this repo:
+
+- [x] AccessManager with time-window restrictions, expirable cards, role checks
+- [x] AuditLogger with WebSocket pub/sub for real-time admin dashboards
+- [x] Sliding-window rate limiter for brute-force protection
+- [x] FastAPI web admin UI with bcrypt auth, CSRF tokens, REST API
+- [x] Bilingual documentation (English + Turkish)
+- [x] Production hardening (timezone-aware datetimes, composite DB indexes, exponential backoff)
+
+Planned future extensions:
+
+- [ ] Tamper detection via optional door switch sensor
 - [ ] LDAP / Active Directory integration
-- [ ] Multi-door coordination protocol (companion repo: `multi-pi-fleet-manager`)
-- [ ] Mobile app (React Native) for admin tasks
 - [ ] OSDP protocol support (industrial standard)
 - [ ] Time-attendance reporting module
+- [ ] Mobile app (React Native) for admin tasks
 
 ---
 
