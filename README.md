@@ -137,6 +137,24 @@ The CI pipeline (GitHub Actions, Python 3.9–3.12 matrix) runs these on every p
 
 ---
 
+## Beyond the MVP — Production Modules
+
+The following modules are already implemented and tested, providing
+production-grade capabilities beyond the basic reader → door pipeline:
+
+| Module | Purpose |
+|--------|---------|
+| `src/access_manager.py` | Orchestrates authorization with time-window restrictions, role-based access, and expirable cards |
+| `src/audit_logger.py` | Append-only event log with pub/sub for real-time admin dashboard broadcast |
+| `src/rate_limiter.py` | Sliding-window brute-force protection (configurable threshold per card UID) |
+| `src/web/` | FastAPI admin UI with bcrypt authentication, CSRF tokens, Starlette sessions, REST API, and WebSocket event stream |
+| `scripts/hash_password.py` | Bcrypt password hash generator for admin credential setup |
+| `docs/hardware-setup.md` | Wiring diagrams, fail-safe vs fail-secure configuration, troubleshooting guide |
+
+Documentation for each module is being expanded; see commit history and inline docstrings for current usage patterns.
+
+---
+
 ## Roadmap
 
 The MVP gets you a working single-door system. Planned extensions

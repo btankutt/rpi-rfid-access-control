@@ -124,6 +124,23 @@ CI (GitHub Actions, Python 3.9–3.12 matrisi) her push'ta bunları çalıştır
 
 ---
 
+## MVP'nin Ötesi — Üretim Modülleri
+
+Aşağıdaki modüller halihazırda implement edilmiş ve test edilmiştir, temel okuyucu → kapı akışının ötesinde üretim sınıfı yetenekler sağlar:
+
+| Modül | Amaç |
+|-------|------|
+| `src/access_manager.py` | Zaman penceresi kısıtları, rol bazlı erişim ve son kullanım tarihli kartlar ile yetkilendirme orkestrasyonu |
+| `src/audit_logger.py` | Gerçek zamanlı yönetici paneline canlı yayın için pub/sub destekli, ekleme-yapılabilir-silinemez olay kaydı |
+| `src/rate_limiter.py` | Kart UID başına yapılandırılabilir eşikle kayan-pencere brute-force koruması |
+| `src/web/` | bcrypt kimlik doğrulama, CSRF token, Starlette oturumları, REST API ve WebSocket olay akışı içeren FastAPI yönetici arayüzü |
+| `scripts/hash_password.py` | Yönetici kimlik bilgileri kurulumu için bcrypt parola hash üretici |
+| `docs/hardware-setup.md` | Kablolama şemaları, fail-safe vs fail-secure yapılandırma, sorun giderme rehberi |
+
+Her modülün dokümantasyonu genişletilmektedir; mevcut kullanım örüntüleri için commit geçmişine ve satır içi docstring'lere bakın.
+
+---
+
 ## Yol Haritası
 
 MVP tek kapılı çalışan bir sistemi sağlar. Planlanan eklemeler:
