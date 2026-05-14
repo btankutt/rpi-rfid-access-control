@@ -48,7 +48,16 @@ class RateLimiter:
         self._window = window_seconds
         self._now = time_source
         self._failures: Dict[str, Deque[float]] = {}
-        self._lock = asyncio.Lock()
+        # Lock is created lazily on first use. On Python 3.9, asyncio.Lock()
+        # binds to the current event loop at construction time and raises if
+        # no loop is running — fatal when the limiter is built from a sync
+        # test fixture. Python 3.10+ removed that coupling.
+        self._lock: Optional[asyncio.Lock] = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     @property
     def max_failures(self) -> int:
@@ -61,7 +70,7 @@ class RateLimiter:
     async def record_failure(self, uid: str) -> None:
         """Record a failed read for this UID."""
         now = self._now()
-        async with self._lock:
+        async with self._get_lock():
             history = self._failures.setdefault(uid, deque())
             history.append(now)
             self._prune(history, now)
@@ -79,7 +88,7 @@ class RateLimiter:
         proving they have a legitimate card, so we forgive any prior
         misreads (which are common with worn or partially-presented cards).
         """
-        async with self._lock:
+        async with self._get_lock():
             if uid in self._failures:
                 del self._failures[uid]
                 logger.debug("Cleared failure history for %s", uid)
@@ -87,7 +96,7 @@ class RateLimiter:
     async def is_locked_out(self, uid: str) -> bool:
         """Return True iff this UID has hit the failure threshold."""
         now = self._now()
-        async with self._lock:
+        async with self._get_lock():
             history = self._failures.get(uid)
             if history is None:
                 return False
@@ -102,7 +111,7 @@ class RateLimiter:
         expires — at which point the count drops below the threshold.
         """
         now = self._now()
-        async with self._lock:
+        async with self._get_lock():
             history = self._failures.get(uid)
             if history is None:
                 return None
@@ -115,7 +124,7 @@ class RateLimiter:
 
     async def reset(self) -> None:
         """Clear all state — useful for tests and admin overrides."""
-        async with self._lock:
+        async with self._get_lock():
             self._failures.clear()
 
     def _prune(self, history: Deque[float], now: float) -> None:
