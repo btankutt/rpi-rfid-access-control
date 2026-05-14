@@ -142,19 +142,31 @@ async def reader_loop(
     stop: asyncio.Event,
     poll_timeout: float = 1.0,
 ) -> None:
-    """Poll the reader forever; dispatch each card read."""
+    """Poll the reader forever; dispatch each card read.
+
+    On error, applies exponential backoff (1s → 60s max) to avoid log
+    spam when the reader is persistently unavailable.
+    """
     logger.info("Reader loop starting")
+    backoff = 1.0
     while not stop.is_set():
         try:
             card = await reader.read_card(timeout=poll_timeout)
             if card is None:
                 continue
             await process_card(card, door)
+            backoff = 1.0  # reset on successful iteration
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.exception("Reader loop error — backing off 1s")
-            await asyncio.sleep(1.0)
+        except Exception as e:
+            logger.exception(
+                "Reader loop error (reader_type=%s, error_type=%s) — backing off %.1fs",
+                reader.reader_type,
+                type(e).__name__,
+                backoff,
+            )
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60.0)
     logger.info("Reader loop stopped")
 
 
