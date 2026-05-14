@@ -58,9 +58,9 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(120))
     role: Mapped[str] = mapped_column(String(20), default="user")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[_dt.datetime] = mapped_column(DateTime, default=_utcnow)
+    created_at: Mapped[_dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[_dt.datetime] = mapped_column(
-        DateTime, default=_utcnow, onupdate=_utcnow
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
 
     def __repr__(self) -> str:
@@ -75,7 +75,7 @@ class AccessLog(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     card_uid: Mapped[str] = mapped_column(String(64), index=True)
     timestamp: Mapped[_dt.datetime] = mapped_column(
-        DateTime, default=_utcnow, index=True
+        DateTime(timezone=True), default=_utcnow, index=True
     )
     decision: Mapped[str] = mapped_column(String(16))
     reason: Mapped[str] = mapped_column(String(120))
