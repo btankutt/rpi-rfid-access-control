@@ -15,9 +15,13 @@ Run with:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+import datetime as _dt
+import json
 import logging
 import signal
+import sys
 from logging.handlers import RotatingFileHandler
 from typing import Any
 
@@ -29,7 +33,7 @@ from src.config import Settings, get_settings
 from src.database import Database, build_sqlite_url
 from src.door_controller import create_door_controller
 from src.rate_limiter import RateLimiter
-from src.readers import create_reader
+from src.readers import CardRead, create_reader
 from src.web.app import AppState, create_app
 
 logger = logging.getLogger(__name__)
@@ -180,7 +184,75 @@ async def main_async() -> None:
     )
 
 
-def main() -> None:
+async def simulate_card_read(uid: str) -> int:
+    """One-shot card-read simulation; for CI smoke tests and manual checks.
+
+    Builds the same component graph as the live app, calls the
+    AccessManager exactly once for the given UID, prints the decision
+    as JSON on stdout, and exits. The HTTP server and reader poll loop
+    are NOT started — this is intentionally a quick batch operation, not
+    a server probe.
+
+    Returns:
+        0 if the simulated read was GRANTED, 1 otherwise. Useful for
+        shell pipelines: ``python -m src.main --simulate-card AAAA && echo OK``.
+    """
+    settings = get_settings()
+    setup_logging(settings)
+    logger.info("Simulating card read for UID=%s", uid)
+
+    state = build_state(settings)
+    await state.database.init_schema()
+    await state.reader.initialize()
+    await state.door.initialize()
+    try:
+        card_read = CardRead(
+            uid=uid,
+            timestamp=_dt.datetime.now(_dt.timezone.utc),
+            reader_type="simulated",
+        )
+        decision = await state.access_manager.handle_card_read(card_read)
+        print(
+            json.dumps(
+                {
+                    "granted": decision.granted,
+                    "reason": decision.reason,
+                    "user_id": decision.user_id,
+                }
+            )
+        )
+        return 0 if decision.granted else 1
+    finally:
+        await state.reader.shutdown()
+        await state.door.shutdown()
+        await state.database.close()
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="rpi-rfid-access-control",
+        description=(
+            "RPi RFID Access Control — run the full server, or use "
+            "--simulate-card to perform a one-shot authorization check."
+        ),
+    )
+    parser.add_argument(
+        "--simulate-card",
+        metavar="UID",
+        dest="simulate_card",
+        help=(
+            "Inject a single card-read for UID and exit with the decision. "
+            "Useful for smoke tests; exits 0 on GRANTED, 1 on DENIED."
+        ),
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = _build_arg_parser().parse_args(argv)
+    if args.simulate_card:
+        exit_code = asyncio.run(simulate_card_read(args.simulate_card))
+        sys.exit(exit_code)
     asyncio.run(main_async())
 
 
