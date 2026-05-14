@@ -22,6 +22,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     String,
     Time,
     desc,
@@ -128,6 +129,10 @@ class AuditLog(Base):
     """
 
     __tablename__ = "audit_log"
+    __table_args__ = (
+        Index("idx_log_user_time", "user_id", "timestamp"),
+        Index("idx_log_decision_time", "decision", "timestamp"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     timestamp: Mapped[_dt.datetime] = mapped_column(
