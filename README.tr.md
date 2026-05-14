@@ -5,7 +5,6 @@
 
 [![Lisans: Apache 2.0](https://img.shields.io/badge/Lisans-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-modern-009688.svg)](https://fastapi.tiangolo.com/)
 
 🇬🇧 [English README](README.md)
 
@@ -13,40 +12,28 @@
 
 ## Genel Bakış
 
-Tek kapılı uygulamalar için tasarlanmış, hazır-üretim kalitesinde tam kapsamlı bir RFID kart geçiş çözümü. Kurulum sonrası doğrudan kullanılabilir: kurcalamaya dayanıklı, ağ kesintilerine karşı dayanıklı, sürekli internet bağlantısı gerektirmez.
+Tek kapılı uygulamalar için asyncio tabanlı, kendi kendine yeten bir RFID
+kart geçiş sistemi. Mevcut kod tabanı **MVP çekirdeğini** kapsar:
+yapılandırma, kalıcı depolama, kapı kontrolü ve kart okuma boru hattı.
+Sonraki adımlarda denetim genişletmeleri, web yönetim arayüzü ve rate
+limiter bu temele eklenecek (uzun vadeli plan için bkz.
+[CLAUDE.md](CLAUDE.md), bileşen haritası için
+[docs/architecture.md](docs/architecture.md)).
 
-Bu proje, **25 kapılı dağıtık RFID kart geçiş sistemi** işleten **5+ yıllık tecrübeli** bir mühendis tarafından inşa edilmiştir. Buradaki kalıplar ve teknik tercihler eğitim örneklerinden değil, gerçek üretim ortamlarından alınmıştır.
+Bu proje, **25 kapılı dağıtık RFID kart geçiş sistemi** işleten
+**5+ yıllık tecrübeli** bir mühendis tarafından inşa edilmiştir.
 
 ---
 
-## Temel Özellikler
+## MVP'deki Modüller
 
-### Donanım Desteği
-- **Üç farklı RFID okuyucu türü** dahili olarak desteklenir:
-  - MFRC522 (SPI bağlantılı, hobi seviyesi modül)
-  - PN532 (NFC destekli, kriptografik kimlik doğrulama destekli)
-  - Endüstriyel RS-232 okuyucular (Wiegand-Seri köprü)
-- **Mock donanım modu** — fiziksel cihaz olmadan geliştirme
-- **GPIO röle kontrolü** — elektromanyetik kilit tetiklemesi
-- **İsteğe bağlı çevre birimleri**: LED durum göstergesi, sesli geri bildirim için buzzer, LCD ekran
-
-### Yazılım
-- **Yetki motoru**: rol tabanlı erişim (yönetici / operatör / kullanıcı), zaman bazlı kısıtlar, son kullanma tarihli kartlar
-- **Kalıcı depolama**: otomatik yedekleme destekli SQLite
-- **Tam denetim kaydı**: her okuma denemesi meta veri ile loglanır (zaman damgası, kart UID, karar, sebep)
-- **Web yönetim arayüzü** (FastAPI): kullanıcı yönetimi, log görüntüleyici, sistem sağlığı
-- **REST API**: dış sistemlerle programatik entegrasyon
-- **Kimlik doğrulama**: bcrypt ile hash'lenmiş yönetici kimlik bilgileri, oturum bazlı UI auth
-- **Gerçek zamanlı güncellemeler**: canlı olay akışı için WebSocket desteği
-
-### Üretim Ortamı Hazırlığı
-- **Fail-safe / fail-secure** modlar — enerji kesintisi yönetimi
-- **Kurcalama tespiti** — isteğe bağlı kapı sensörü
-- **Ağ dayanıklılığı**: çevrimdışı öncelikli, bağlantı geldiğinde senkronizasyon
-- **Sağlık izleme**: heartbeat endpoint, systemd watchdog entegrasyonu
-- **Docker desteği** — tekrarlanabilir kurulum
-- **CI/CD**: her push'ta GitHub Actions ile otomatik test
-- **Test kapsamı**: pytest ile %90+ kod kapsama hedefi
+| Modül | Amaç |
+| --- | --- |
+| `src/config.py` | pydantic-settings ile env'den ayar yükleme |
+| `src/database.py` | SQLAlchemy 2.0 async modelleri (`User`, `AccessLog`) + CRUD |
+| `src/readers/` | RFID okuyucu soyutlaması (Mock, MFRC522, PN532, RS-232) |
+| `src/door_controller.py` | Röle soyutlaması: `MockDoorController` + `GPIODoorController` |
+| `src/main.py` | Giriş noktası: reader loop, sinyal yönetimi, `--simulate-card` |
 
 ---
 
@@ -62,24 +49,18 @@ python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
-# 3. Mock mod için yapılandır
+# 3. Mock mod için yapılandır (default değerler zaten mock dostu)
 cp .env.example .env
-# .env dosyasını düzenle — USE_MOCK_HARDWARE=true yap
 
-# 4. Çalıştır
+# 4. Reader loop'u çalıştır
 python -m src.main
-
-# 5. Tarayıcıyı aç
-# Web arayüzü:  http://localhost:8000
-# API dokümanı: http://localhost:8000/docs
 ```
 
-Sistem **mock modda** başlar — Raspberry Pi veya RFID donanımı gerekmez. Web arayüzündeki "Simulate Card Read" butonu ile tüm akışı uçtan uca test edebilirsiniz.
+Sistem **mock modda** başlar — Raspberry Pi veya RFID donanımı gerekmez.
 
 ### Tek-atımlık duman testi (sunucu açmadan)
 
-CI hatları veya hızlı bir doğrulama için, HTTP sunucusunu başlatmadan
-tek bir yetkilendirme kararı çalıştırabilirsiniz:
+CI hatları veya hızlı doğrulama için tek bir yetkilendirme kararı:
 
 ```bash
 python -m src.main --simulate-card A1B2C3D4
@@ -87,58 +68,79 @@ python -m src.main --simulate-card A1B2C3D4
 # Çıkış kodu: 1 (DENIED). 0 ise GRANTED.
 ```
 
----
+GRANTED görmek için önce kartı seed'le:
 
-## Donanım Kurulum Listesi
-
-Asgari donanım listesi:
-
-| Bileşen | Not |
-|---------|------|
-| Raspberry Pi Zero 2 W (veya Pi 3/4) | Üretim ortamı için Pi 4 önerilir |
-| MicroSD kart | En az 16 GB, Class 10 |
-| Güç adaptörü | 5V, 2.5A veya daha yüksek |
-| MFRC522 RFID modülü | SPI; sadece 3.3V — 5V ile beslemeyin |
-| 1-kanal röle modülü | AC yük için opto-izoleli önerilir |
-| RFID kart/anahtarlık | MIFARE Classic 1K uyumlu |
-| Atlama kabloları | Pi GPIO için dişi-dişi |
-| **Opsiyonel:** 12V solenoid/elektromanyetik kilit | İhtiyaca göre fail-safe (NO) veya fail-secure (NC) |
-| **Opsiyonel:** LED, buzzer | Görsel/sesli geri bildirim |
-
-Endüstriyel RS-232 okuyucular (HID, Wiegand) için kurum sınıfı kurulum dokümanını [docs/hardware-setup.md](docs/hardware-setup.md) içinde bulabilirsiniz.
+```bash
+python -c "
+import asyncio
+from src.config import get_settings
+from src.database import init_engine, init_db, add_user, close_db
+async def go():
+    init_engine(get_settings().database_path)
+    await init_db()
+    await add_user(card_uid='A1B2C3D4', name='Test User')
+    await close_db()
+asyncio.run(go())
+"
+python -m src.main --simulate-card A1B2C3D4
+```
 
 ---
 
-## Üretim Ortamı için Dikkat Edilecekler
+## Donanım Kurulumu
 
-Gerçek dağıtımlarda öğrenilmiş, dokümandan görülemeyen detaylar:
+Fiziksel donanım dağıtımları için
+[docs/hardware-setup.md](docs/hardware-setup.md) — kablolama, pin
+çıkışları, fail-safe vs fail-secure yapılandırması, sorun giderme listesi.
 
-- **SPI sinyal kararlılığı**: MFRC522 hatları 30 cm'den kısa olmalı, aksi gürültü problemi. Daha uzun mesafe için kılıflı kablo veya RS-485'e geçiş gerekir.
-- **Röle izolasyonu**: AC yük için her zaman opto-izoleli röle modülü kullanın. Ucuz modüller Pi'nin GPIO'suna geri besleme yapabilir.
-- **Güç mimarisi**: Pi ve kilit **ayrı güç hatlarında** olmalı. Kilit anahtarlamasından gelen ani akım Pi'yi düşürebilir.
-- **Fail-safe vs fail-secure**: Mevzuata göre yapılandırın. Yangın yönetmelikleri çıkış kapıları için **fail-safe** (elektrik kesilince açık), sadece giriş kapıları için **fail-secure** (kesilince kapalı) ister.
-- **Ağ dayanıklılığı**: Bulut bağlantısı asla varsayılmamalı. Sistem çevrimdışı çalışmalı, senkronizasyon ikinci özellik.
-- **Kurcalama tespiti**: Kapı sensörü zorlama girişi tespit eder. Denetim kayıtlarıyla birleştirilince güvenlik denetimi için kanıt sağlar.
-- **Kart kopyalama**: MFRC522 sadece UID okur — UID kopyalanabilir. Yüksek güvenlik için PN532 + kriptografik kimlik doğrulama (DESFire EV1+) kullanın.
-- **Yedekleme stratejisi**: SQLite çok sağlam ama yedekler **cihaz dışında** olmalı (NAS'a rsync vb.). Cihaz içi yedek SD kart arızasına karşı korumaz.
+---
+
+## Yapılandırma
+
+Tüm yapılandırma `.env` dosyası üzerinden ortam değişkenleri ile yapılır:
+
+```env
+USE_MOCK_HARDWARE=true
+READER_TYPE=mfrc522                 # mfrc522 | pn532 | rs232 | mock
+RELAY_GPIO_PIN=17
+DATABASE_PATH=./data/access.db
+DOOR_OPEN_DURATION_SECONDS=5.0
+FAIL_SAFE_MODE=true
+LOG_LEVEL=INFO
+LOG_FILE=./logs/access.log
+```
+
+---
+
+## Testleri Çalıştırma
+
+```bash
+pytest --cov=src tests/
+ruff check src/ tests/
+mypy src/ --ignore-missing-imports
+```
+
+CI (GitHub Actions, Python 3.9–3.12 matrisi) her push'ta bunları çalıştırır.
 
 ---
 
 ## Yol Haritası
 
+MVP tek kapılı çalışan bir sistemi sağlar. Planlanan eklemeler:
+
+- [ ] AccessManager: zaman penceresi kısıtları, süresi dolan kartlar, rol kontrolleri
+- [ ] AuditLogger: gerçek zamanlı admin dashboard'ları için WebSocket pub/sub
+- [ ] Rate limiter: ardışık başarısız okumalara karşı brute-force koruması
+- [ ] Web yönetim arayüzü: kullanıcı CRUD, log görüntüleyici (FastAPI + Jinja2)
+- [ ] Opsiyonel kapı sensörü ile kurcalama tespiti
 - [ ] LDAP / Active Directory entegrasyonu
-- [ ] Çok-kapılı koordinasyon protokolü (kardeş proje: `multi-pi-fleet-manager`)
-- [ ] Mobil uygulama (React Native) — yönetici işlemleri için
-- [ ] OSDP protokol desteği (endüstri standardı)
-- [ ] Personel devam takibi raporlama modülü
+- [ ] OSDP protokol desteği
 
 ---
 
 ## Lisans
 
 Apache Lisansı 2.0 — [LICENSE](LICENSE) dosyasını inceleyiniz.
-
-İzinli açık kaynak: telif hakkı bildirimini koruduğunuz ve patent hibesindeki değişiklikleri açıkladığınız sürece bu yazılımı (ticari kullanım dahil) kullanabilir, değiştirebilir ve dağıtabilirsiniz.
 
 ---
 
