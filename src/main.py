@@ -37,6 +37,8 @@ from src.readers import CardRead, RFIDReader, create_reader
 
 logger = logging.getLogger(__name__)
 
+_background_tasks: set[asyncio.Task] = set()
+
 
 def setup_logging(settings: Settings) -> None:
     """Configure root logging with a console + rotating-file handler.
@@ -90,6 +92,13 @@ def _build_components(settings: Settings) -> tuple[RFIDReader, DoorController]:
     return reader, door
 
 
+def _log_task_exception(task: asyncio.Task) -> None:
+    """Log exceptions from background tasks instead of swallowing them."""
+    exc = task.exception()
+    if exc is not None:
+        logger.error("Background task failed", exc_info=exc)
+
+
 async def process_card(card: CardRead, door: DoorController) -> dict:
     """Handle one card read end-to-end.
 
@@ -120,7 +129,10 @@ async def process_card(card: CardRead, door: DoorController) -> dict:
     )
     logger.info("GRANTED uid=%s user=%s", card.uid, user.name)
     # Fire-and-forget door open so the reader can continue polling.
-    asyncio.create_task(door.open())
+    task = asyncio.create_task(door.open())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    task.add_done_callback(_log_task_exception)
     return {"granted": True, "reason": "OK", "user_id": user.id}
 
 
@@ -155,8 +167,10 @@ async def _simulate_one(uid: str, door: DoorController) -> int:
     )
     decision = await process_card(card, door)
     print(json.dumps(decision))
-    # Let any fire-and-forget door task complete before returning.
-    await asyncio.sleep(0)
+    # Wait for any background tasks (door open pulse) to complete
+    pending = [t for t in _background_tasks if not t.done()]
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
     return 0 if decision["granted"] else 1
 
 
