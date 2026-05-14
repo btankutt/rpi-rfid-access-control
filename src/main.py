@@ -1,16 +1,14 @@
 """
 Application entry point.
 
-Wires the configured components together and runs three concurrent
-tasks:
-1. The uvicorn HTTP server (admin UI + REST + WebSocket).
-2. The reader poll loop, forwarding each `CardRead` to the
-   `AccessManager`.
-3. (Implicitly) the FastAPI lifespan, which owns schema init and
-   hardware initialize/shutdown.
+Wires the four components (config, database, reader, door) together,
+then runs an asyncio loop that polls the reader and dispatches each
+card read to the access-decision pipeline.
 
-Run with:
-    python -m src.main
+Run with::
+
+    python -m src.main                    # full reader loop
+    python -m src.main --simulate-card X  # one-shot smoke test
 """
 
 from __future__ import annotations
@@ -23,18 +21,19 @@ import logging
 import signal
 import sys
 from logging.handlers import RotatingFileHandler
-from typing import Any
+from pathlib import Path
+from typing import Optional
 
-import uvicorn
-
-from src.access_manager import AccessManager
-from src.audit_logger import AuditLogger
 from src.config import Settings, get_settings
-from src.database import Database, build_sqlite_url
-from src.door_controller import create_door_controller
-from src.rate_limiter import RateLimiter
-from src.readers import CardRead, create_reader
-from src.web.app import AppState, create_app
+from src.database import (
+    close_db,
+    get_user_by_uid,
+    init_db,
+    init_engine,
+    log_access_attempt,
+)
+from src.door_controller import DoorController, create_door_controller
+from src.readers import CardRead, RFIDReader, create_reader
 
 logger = logging.getLogger(__name__)
 
@@ -42,16 +41,14 @@ logger = logging.getLogger(__name__)
 def setup_logging(settings: Settings) -> None:
     """Configure root logging with a console + rotating-file handler.
 
-    Called once at startup. The application emits everything through
-    `logging.getLogger(__name__)`, so this is the single place to tune
-    formatting and destinations.
+    The function is idempotent — repeated calls do not pile up handlers.
     """
-    settings.ensure_directories()
+    Path(settings.log_file).parent.mkdir(parents=True, exist_ok=True)
+
     root = logging.getLogger()
     root.setLevel(settings.log_level)
     fmt = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
 
-    # Clear any prior handlers (idempotent under reloads/tests).
     for handler in list(root.handlers):
         root.removeHandler(handler)
 
@@ -60,82 +57,87 @@ def setup_logging(settings: Settings) -> None:
     root.addHandler(console)
 
     fh = RotatingFileHandler(
-        settings.log_file,
-        maxBytes=settings.log_max_bytes,
-        backupCount=settings.log_backup_count,
+        settings.log_file, maxBytes=10 * 1024 * 1024, backupCount=5
     )
     fh.setFormatter(fmt)
     root.addHandler(fh)
 
 
-def build_state(settings: Settings) -> AppState:
-    """Construct every component from the loaded settings.
+def _reader_kwargs(settings: Settings) -> dict:
+    """Reader-specific kwargs from settings."""
+    if settings.reader_type == "rs232" and not settings.use_mock_hardware:
+        return {"port": settings.rs232_port, "baudrate": settings.rs232_baudrate}
+    return {}
 
-    The choice between mock and real hardware is centralized here so
-    nothing else in the codebase needs to branch on `use_mock_hardware`.
-    """
-    db = Database(build_sqlite_url(str(settings.database_path)))
 
+def _build_components(settings: Settings) -> tuple[RFIDReader, DoorController]:
+    """Construct the reader and door controller from settings."""
     reader_type = "mock" if settings.use_mock_hardware else settings.reader_type
-    reader_kwargs: dict[str, Any] = {}
-    if reader_type == "rs232":
-        reader_kwargs = {
-            "port": settings.rs232_port,
-            "baudrate": settings.rs232_baudrate,
-        }
-    reader = create_reader(reader_type, **reader_kwargs)
+    reader = create_reader(reader_type, **_reader_kwargs(settings))
 
-    door_type = "mock" if settings.use_mock_hardware else "gpio"
-    if door_type == "gpio":
-        door_kwargs: dict[str, Any] = {
-            "pin": settings.relay_gpio_pin,
-            "default_duration_seconds": settings.door_open_duration_seconds,
-            "fail_safe": settings.fail_safe_mode,
-        }
+    if settings.use_mock_hardware:
+        door = create_door_controller(
+            use_mock=True,
+            default_duration_seconds=settings.door_open_duration_seconds,
+        )
     else:
-        door_kwargs = {
-            "default_duration_seconds": settings.door_open_duration_seconds
-        }
-    door = create_door_controller(door_type, **door_kwargs)
+        door = create_door_controller(
+            use_mock=False,
+            pin=settings.relay_gpio_pin,
+            default_duration_seconds=settings.door_open_duration_seconds,
+            fail_safe_mode=settings.fail_safe_mode,
+        )
+    return reader, door
 
-    audit = AuditLogger(db)
-    limiter = RateLimiter(
-        max_failures=settings.rate_limit_failed_attempts,
-        window_seconds=settings.rate_limit_window_seconds,
+
+async def process_card(card: CardRead, door: DoorController) -> dict:
+    """Handle one card read end-to-end.
+
+    Looks up the cardholder, decides allow/deny, writes the audit row,
+    and (on grant) triggers the door open pulse. The decision dict is
+    returned so callers (e.g. `--simulate-card`) can inspect or print it.
+    """
+    user = await get_user_by_uid(card.uid)
+    if user is None:
+        await log_access_attempt(
+            card_uid=card.uid, decision="DENIED", reason="UNKNOWN_CARD"
+        )
+        logger.info("DENIED uid=%s reason=UNKNOWN_CARD", card.uid)
+        return {"granted": False, "reason": "UNKNOWN_CARD", "user_id": None}
+
+    if not user.is_active:
+        await log_access_attempt(
+            card_uid=card.uid,
+            decision="DENIED",
+            reason="USER_INACTIVE",
+            user_id=user.id,
+        )
+        logger.info("DENIED uid=%s reason=USER_INACTIVE", card.uid)
+        return {"granted": False, "reason": "USER_INACTIVE", "user_id": user.id}
+
+    await log_access_attempt(
+        card_uid=card.uid, decision="GRANTED", reason="OK", user_id=user.id
     )
-    am = AccessManager(
-        database=db,
-        door=door,
-        audit=audit,
-        rate_limiter=limiter,
-        door_open_duration=settings.door_open_duration_seconds,
-    )
-    return AppState(
-        settings=settings,
-        database=db,
-        reader=reader,
-        door=door,
-        audit=audit,
-        rate_limiter=limiter,
-        access_manager=am,
-    )
+    logger.info("GRANTED uid=%s user=%s", card.uid, user.name)
+    # Fire-and-forget door open so the reader can continue polling.
+    asyncio.create_task(door.open())
+    return {"granted": True, "reason": "OK", "user_id": user.id}
 
 
 async def reader_loop(
-    state: AppState, stop: asyncio.Event, poll_timeout: float = 1.0
+    reader: RFIDReader,
+    door: DoorController,
+    stop: asyncio.Event,
+    poll_timeout: float = 1.0,
 ) -> None:
-    """Poll the reader; dispatch each card read to the AccessManager.
-
-    Errors in any single iteration are logged and the loop backs off for
-    one second — we never want a transient hardware glitch to take the
-    door offline. Cancellation propagates immediately.
-    """
+    """Poll the reader forever; dispatch each card read."""
     logger.info("Reader loop starting")
     while not stop.is_set():
         try:
-            card = await state.reader.read_card(timeout=poll_timeout)
-            if card is not None:
-                await state.access_manager.handle_card_read(card)
+            card = await reader.read_card(timeout=poll_timeout)
+            if card is None:
+                continue
+            await process_card(card, door)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -144,96 +146,63 @@ async def reader_loop(
     logger.info("Reader loop stopped")
 
 
-async def main_async() -> None:
+async def _simulate_one(uid: str, door: DoorController) -> int:
+    """One-shot card read for smoke tests; prints decision as JSON."""
+    card = CardRead(
+        uid=uid,
+        timestamp=_dt.datetime.now(_dt.timezone.utc),
+        reader_type="simulated",
+    )
+    decision = await process_card(card, door)
+    print(json.dumps(decision))
+    # Let any fire-and-forget door task complete before returning.
+    await asyncio.sleep(0)
+    return 0 if decision["granted"] else 1
+
+
+async def main_async(simulate_card: Optional[str] = None) -> int:
     settings = get_settings()
     setup_logging(settings)
     logger.info(
-        "Starting RPi RFID Access Control (mock=%s, reader=%s, port=%d)",
+        "Starting (mock=%s, reader=%s)",
         settings.use_mock_hardware,
         settings.reader_type,
-        settings.web_port,
     )
 
-    state = build_state(settings)
-    app = create_app(state)
+    init_engine(settings.database_path)
+    await init_db()
 
-    stop_event = asyncio.Event()
+    reader, door = _build_components(settings)
+    await reader.initialize()
+    await door.initialize()
 
-    server = uvicorn.Server(
-        uvicorn.Config(
-            app,
-            host=settings.web_host,
-            port=settings.web_port,
-            log_config=None,
-            access_log=False,
-        )
-    )
-
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, stop_event.set)
-        except NotImplementedError:
-            # Windows event loops do not support add_signal_handler;
-            # uvicorn installs its own KeyboardInterrupt handler.
-            pass
-
-    await asyncio.gather(
-        server.serve(),
-        reader_loop(state, stop_event),
-    )
-
-
-async def simulate_card_read(uid: str) -> int:
-    """One-shot card-read simulation; for CI smoke tests and manual checks.
-
-    Builds the same component graph as the live app, calls the
-    AccessManager exactly once for the given UID, prints the decision
-    as JSON on stdout, and exits. The HTTP server and reader poll loop
-    are NOT started — this is intentionally a quick batch operation, not
-    a server probe.
-
-    Returns:
-        0 if the simulated read was GRANTED, 1 otherwise. Useful for
-        shell pipelines: ``python -m src.main --simulate-card AAAA && echo OK``.
-    """
-    settings = get_settings()
-    setup_logging(settings)
-    logger.info("Simulating card read for UID=%s", uid)
-
-    state = build_state(settings)
-    await state.database.init_schema()
-    await state.reader.initialize()
-    await state.door.initialize()
     try:
-        card_read = CardRead(
-            uid=uid,
-            timestamp=_dt.datetime.now(_dt.timezone.utc),
-            reader_type="simulated",
-        )
-        decision = await state.access_manager.handle_card_read(card_read)
-        print(
-            json.dumps(
-                {
-                    "granted": decision.granted,
-                    "reason": decision.reason,
-                    "user_id": decision.user_id,
-                }
-            )
-        )
-        return 0 if decision.granted else 1
+        if simulate_card:
+            return await _simulate_one(simulate_card, door)
+
+        stop_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, stop_event.set)
+            except NotImplementedError:
+                # Windows event loops don't support add_signal_handler.
+                pass
+
+        await reader_loop(reader, door, stop_event)
+        return 0
     finally:
-        await state.reader.shutdown()
-        await state.door.shutdown()
-        await state.database.close()
+        await reader.shutdown()
+        await door.shutdown()
+        await close_db()
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rpi-rfid-access-control",
         description=(
-            "RPi RFID Access Control — run the full server, or use "
-            "--simulate-card to perform a one-shot authorization check."
+            "RPi RFID Access Control — runs the reader poll loop, or "
+            "with --simulate-card performs a one-shot smoke test."
         ),
     )
     parser.add_argument(
@@ -241,8 +210,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="UID",
         dest="simulate_card",
         help=(
-            "Inject a single card-read for UID and exit with the decision. "
-            "Useful for smoke tests; exits 0 on GRANTED, 1 on DENIED."
+            "Inject a single card-read for UID and exit. Prints the "
+            "decision as JSON; exits 0 on GRANTED, 1 on DENIED."
         ),
     )
     return parser
@@ -250,10 +219,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     args = _build_arg_parser().parse_args(argv)
-    if args.simulate_card:
-        exit_code = asyncio.run(simulate_card_read(args.simulate_card))
-        sys.exit(exit_code)
-    asyncio.run(main_async())
+    exit_code = asyncio.run(main_async(args.simulate_card))
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
