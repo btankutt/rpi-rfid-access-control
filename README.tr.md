@@ -24,7 +24,7 @@ Bu proje, **25 kapılı dağıtık RFID kart geçiş sistemi** işleten **5+ yı
 ### Donanım Desteği
 - **Üç farklı RFID okuyucu türü** dahili olarak desteklenir:
   - MFRC522 (SPI bağlantılı, hobi seviyesi modül)
-  - PN532 (NFC destekli, kriptografik kimlik doğrulama destekli)
+  - PN532 (NFC destekli, kriptografik kimlik doğrulama destekli — *taslak, donanım testi bekleniyor*)
   - Endüstriyel RS-232 okuyucular (Wiegand-Seri köprü)
 - **Mock donanım modu** — fiziksel cihaz olmadan geliştirme
 - **GPIO röle kontrolü** — elektromanyetik kilit tetiklemesi

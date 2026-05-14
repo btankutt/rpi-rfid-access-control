@@ -25,7 +25,7 @@ This project is built by an engineer with **5+ years of experience** operating a
 ### Hardware Support
 - **Three RFID reader types** supported out of the box:
   - MFRC522 (SPI, hobby-grade module)
-  - PN532 (NFC-capable, supports cryptographic authentication)
+  - PN532 (NFC-capable, supports cryptographic authentication — *stubbed, awaiting hardware testing*)
   - Industrial RS-232 readers (Wiegand-to-serial bridges)
 - **Mock hardware mode** for development without physical devices
 - **GPIO relay control** for electromagnetic lock actuation

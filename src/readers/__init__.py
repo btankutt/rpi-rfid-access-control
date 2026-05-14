@@ -198,6 +198,11 @@ class PN532Reader(RFIDReader):
     - I2C (recommended)
     - SPI
     - UART
+
+    Note: This implementation is currently a stub. The PN532 supports NFC
+    cryptographic authentication (e.g., MIFARE DESFire EV1+), but the actual
+    read logic has not been implemented yet — physical hardware testing is
+    required before production use. Use MFRC522Reader or RS232Reader for now.
     """
 
     reader_type = "pn532"

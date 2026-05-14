@@ -67,3 +67,11 @@ secrets/
 # Local development overrides
 docker-compose.override.yml
 local_config.py
+
+# Test/dev cache directories
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
